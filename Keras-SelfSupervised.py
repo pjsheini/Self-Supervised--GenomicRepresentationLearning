@@ -132,7 +132,7 @@ if __name__ == "__main__":
         hist= ssl.fit(training_generator_aug,
                         validation_data=validation_generator,
                         use_multiprocessing=True,
-                        workers=80,
+                        workers=2,
                         epochs=EPOCHS,
                         verbose=0, 
                         callbacks=[TqdmCallback(verbose=1),early_stopping, tensorboard_callback ]
@@ -169,8 +169,8 @@ if __name__ == "__main__":
         hist0= Prev_ssl.fit(training_generator,
                     validation_data=validation_generator,
                     use_multiprocessing=True,
-                    workers=64,
-                    epochs= 5
+                    workers=2,
+                    epochs= 1
                     #,callbacks=callbacks_list
                     )
         
