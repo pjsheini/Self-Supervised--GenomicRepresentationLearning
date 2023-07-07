@@ -14,7 +14,6 @@ import random as rand
 from urllib.parse import urlparse
 import sys
 from tqdm.keras import TqdmCallback
-from tables import *
 import swalign
 import datetime
 from sklearn.metrics.pairwise import kernel_metrics
@@ -26,16 +25,15 @@ from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from sklearn.metrics import confusion_matrix
 from sklearn import manifold
 from sklearn.neighbors import NearestNeighbors
-#from CNNGrimish2 import *
 from SSLModel import *
 from scipy import spatial,sparse
 if __name__ == "__main__":
     
     #nts = "ATCG"
     nk=3
-    r=20
+    #r=20
     totCount = 0
-    fldb = "../ML3nv-VCode/Data/BatCov_RpYN06.unmapped.fa"
+    fldb = "./data/bat2100k.unmapped.fa"
     with open(fldb, "r",encoding="utf-8",errors='ignore') as f:
         totCount = (sum(bl.count(">") for bl in blocks(f))+1)
     print(f" num of lines {totCount}")
@@ -47,7 +45,7 @@ if __name__ == "__main__":
     nrw =160
     # Parameters
    
-    BATCH_SIZE = float(sys.argv[1]) if len(sys.argv) > 1 else 32 #256
+    BATCH_SIZE = float(sys.argv[1]) if len(sys.argv) > 1 else 16 #256
     EPOCHS = float(sys.argv[2]) if len(sys.argv) > 2 else 5 #10
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
     params = {'dim': (nrw, ncl),
@@ -64,33 +62,52 @@ if __name__ == "__main__":
               'n_channels': 1,
               'shuffle': False}
     partition = {}
-    num_samples = 50000000
+    num_samples = 5000
     num_training_samples = int(num_samples * 0.80 )
     num_validation_samples = int(num_samples * 0.20)
-    #createGrimmdb(nkmlist,fldb, nk)
-    #createTestdb(nkmlist, nk)
+    createGrimmdb(nkmlist,fldb, nk)
+    createTestdb(nkmlist, nk)
     alldbidx  = list(range(int(totCount)))
     #partition['train'] = alldbidx[1:6400000]#(int(totCount * (0.9)))]
     #partition['validation'] = alldbidx[6400000:7172884]
     partition['train'] = alldbidx[1:num_training_samples]#(int(totCount * (0.9)))]
     partition['validation'] = alldbidx[num_training_samples:num_validation_samples]
-    partition['smtrain'] = alldbidx[1:100000]#(int(totCount * (0.9)))]
-    partition['train_tsne'] = np.random.choice(partition['train'], replace=False, size=10000)
+    partition['smtrain'] = alldbidx[1:100]#(int(totCount * (0.9)))]
+    partition['train_tsne'] = np.random.choice(partition['train'], replace=False, size=100)
     #partition['validation'] = alldbidx[640000:717288]
-    partition['test'] = list(range(1,5000))
+    partition['test'] = list(range(1,50))
     training_generator = DataGenerator(partition['train'], **params)
     training_generator_aug = DataGenerator(partition['train'], **params_augmented)
     #augmented_training_dataset = training_generator.apply(custom_augment)
     training_generator_tsne = DataGenerator(partition['train_tsne'], **params)
     training_generatorsm = DataGenerator(partition['smtrain'], **testparams)
     validation_generator = DataGenerator(partition['validation'], **params)
-    #test_generator = TestGenerator(partition['test'], **testparams)
-    #training_data = (pair for pair in zip(training_generator, training_generator_aug))
+    test_generator = TestGenerator(partition['test'], **testparams)
+    training_data = (pair for pair in zip(training_generator, training_generator_aug))
+    print(training_generator)
     #training_data = tf.data.Dataset.zip((training_generator, training_generator_aug))
+    training_data = tf.data.Dataset.zip(
+        (
+            tf.data.Dataset.from_generator(
+                training_generator.__iter__,
+                output_signature=(
+                    tf.TensorSpec(shape=(None, nrw, 64, 1), dtype=tf.float32),
+                    # Specify the appropriate shape and dtype for your labels
+                ),
+            ),
+            tf.data.Dataset.from_generator(
+                training_generator_aug.__iter__,
+                output_signature=(
+                    tf.TensorSpec(shape=(None, nrw, 64, 1), dtype=tf.float32),
+                    # Specify the appropriate shape and dtype for your labels
+                ),
+            ),
+        )
+    )
     #print(len(training_data))
-    #steps = EPOCHS * (num_training_samples // BATCH_SIZE)
-    #lr_decayed_fn = tf.keras.optimizers.schedules.CosineDecay(initial_learning_rate=0.01, decay_steps=steps)
-    #opt = tf.keras.optimizers.SGD(lr_decayed_fn, momentum=0.6)
+    steps = EPOCHS * (num_training_samples // BATCH_SIZE)
+    lr_decayed_fn = tf.keras.optimizers.schedules.CosineDecay(initial_learning_rate=0.01, decay_steps=steps)
+    opt = tf.keras.optimizers.legacy.SGD(lr_decayed_fn, momentum=0.6)
     
     with mlflow.start_run():
         
@@ -104,7 +121,7 @@ if __name__ == "__main__":
         #vae.encoder.summary
         #VAE model
         early_stopping = tf.keras.callbacks.EarlyStopping(monitor="loss", patience=5, restore_best_weights=True)
-        opt = tf.keras.optimizers.SGD(lr_decayed_fn, momentum=0.6)
+        opt = tf.keras.optimizers.legacy.SGD(lr_decayed_fn, momentum=0.6)
         #vae.compile(opt)
         log_dir = "logs/SGD-ssl/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
@@ -121,8 +138,8 @@ if __name__ == "__main__":
                         callbacks=[TqdmCallback(verbose=1),early_stopping, tensorboard_callback ]
                         )
         mlflow.log_metric("loss", float(hist.history['loss'][-1]))
-        #mlflow.log_metric("reconstruction_loss", float(hist.history['reconstruction_loss'][-1]))
-        #mlflow.log_metric("accuracy", float(hist.history['accuracy'][-1]))
+        mlflow.log_metric("reconstruction_loss", float(hist.history['reconstruction_loss'][-1]))
+        mlflow.log_metric("accuracy", float(hist.history['accuracy'][-1]))
         tracking_url_type_store = urlparse(mlflow.get_tracking_uri()).scheme
         
         # Model registry does not work with file store
@@ -137,8 +154,8 @@ if __name__ == "__main__":
             mlflow.sklearn.log_model(lr_decayed_fn, "model")
         ssl.encoder.save("Models/V02ssl_encoder"+ datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),save_format='tf') 
         ssl.predictor.save("Models/V02ssl_predictor"+ datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),save_format='tf') 
-        #ssl.save("Models/ssl00")
-        """
+        ssl.save("Models/ssl00")
+        
         prev_encoder = load_model("Models/V02ssl_encoder20220301-112643")
         prev_predictor = load_model("Models/V02ssl_predictor20220301-112654")
         Prev_ssl = SelfSupervisedLearning(prev_encoder, prev_encoder)
@@ -146,19 +163,19 @@ if __name__ == "__main__":
         
         
         
-        #filepath0 = "Models/V25ssl_encoder.h5"
-        #checkpoint = ModelCheckpoint(filepath0, monitor='loss', verbose=1, save_best_only=True, mode='min')
+        filepath0 = "Models/V25ssl_encoder.h5"
+        checkpoint = ModelCheckpoint(filepath0, monitor='loss', verbose=1, save_best_only=True, mode='min')
         #callbacks_list = [checkpoint]
         hist0= Prev_ssl.fit(training_generator,
                     validation_data=validation_generator,
                     use_multiprocessing=True,
                     workers=64,
-                    epochs= 1
+                    epochs= 5
                     #,callbacks=callbacks_list
                     )
         
         
-        """
+        
         
         # summarize history for loss
         plt.plot(hist.history['loss'])
@@ -170,10 +187,10 @@ if __name__ == "__main__":
         plt.xlabel('epoch')
         plt.legend(['train', 'test'], loc='upper left')#, 'kl_loss'
         plt.show()
-        plt.savefig("Loss-Graph/loss-RpYN06"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+".png", bbox_inches='tight')
+        plt.savefig("Loss-Graph/loss-NEw"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+".png", bbox_inches='tight')
         
-        #tf.config.run_functions_eagerly(True)
-        #tf.data.experimental.enable_debug_mode()
+        tf.config.run_functions_eagerly(True)
+        tf.data.experimental.enable_debug_mode()
         #"""
         pencoder =ssl.encoder   #Prev_ssl.predictor
         #Prev_ssl = load_model("Models/V01ssl_encoder")
@@ -181,12 +198,12 @@ if __name__ == "__main__":
         #encoder0 = tf.keras.Model(Prev_ssl.input, Prev_ssl.layers[-3].output)
         e_train = pencoder.predict(training_generatorsm)
         #print(e_train.shape)
-        #e_train_tsne = pencoder.predict(training_generator_tsne)
+        e_train_tsne = pencoder.predict(training_generator_tsne)
 
         
         #print(e_train_tsne.shape)
-        #plot_tsne(e_train_tsne, "tsne-plots/tsne-RpYN06"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+"V27ssl.png")
-        #plt.show()
+        plot_tsne(e_train_tsne, "tsne-plots/tsne-New"+datetime.datetime.now().strftime("%Y%m%d-%H%M%S")+"V27ssl.png")
+        plt.show()
         testdata  = test_generation(partition['test'])
         x_test =[]
         #arrtest = np.empty((0, nrw, ncl), dtype= np.uint8)
