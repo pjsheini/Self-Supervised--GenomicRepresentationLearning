@@ -2,7 +2,6 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras.layers import Layer
 from CNNGrimish2 import *
-import tensorflow_addons as tfa
 import tensorflow.keras.backend as K
 import random
 nk=3
@@ -243,7 +242,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         for i , ID in enumerate(list_IDs_temp):
             # Store sample
             #print(np.load('data/db-2.npy').shape)
-            sparse_matrix = (scipy.sparse.load_npz("../MLEnv-VCode/data/RpTN06-db-"+ str(ID) +".npz").todense())
+            sparse_matrix = (scipy.sparse.load_npz("./data/RpTN06-db-"+ str(ID) +".npz").todense())
             sparse_matrix = np.expand_dims(sparse_matrix,axis=2)
             #print(sparse_matrix.shape)
             X[i,]=np.r_[ sparse_matrix,np.zeros((12,64,1))]
@@ -303,7 +302,7 @@ class TestGenerator(tf.keras.utils.Sequence):
             #print(np.load('data/db-2.npy').shape)
             keyone = str(ID)+".1"
             #keytwo = str(ID)+".2"
-            notpadded = np.load("../MLEnv-VCode/Test/testRaTG13-"+ keyone +".npy").reshape( 148, 64,1)
+            notpadded = np.load("./Test/testRaTG13-"+ keyone +".npy").reshape( 148, 64,1)
             padded =np.r_[ notpadded,np.zeros((12,64,1))]
             X[i,] = padded
             #X[i,] = np.load("test/testRaTG13-"+ keytwo +".npy")
@@ -322,7 +321,7 @@ def test_generation( list_IDs_temp):
             #print(np.load('data/db-2.npy').shape)
             keyone = str(ID)+".1"
             #keytwo = str(ID)+".2"
-            notpadded = np.load("../MLEnv-VCode/Test/testRaTG13-"+ keyone +".npy").reshape( 148, 64,1)
+            notpadded = np.load("./Test/testRaTG13-"+ keyone +".npy").reshape( 148, 64,1)
             padded =np.r_[ notpadded,np.zeros((12,64,1))]
             X[i,] = padded
 
