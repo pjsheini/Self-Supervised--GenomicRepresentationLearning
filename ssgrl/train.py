@@ -50,6 +50,8 @@ def parse_args(argv=None):
     m.add_argument("--backbone", choices=["resnet1d", "resnet2d"], default="resnet1d")
     m.add_argument("--widths", type=int, nargs="+", default=[64, 128, 256])
     m.add_argument("--blocks", type=int, default=2, help="residual blocks per stage")
+    m.add_argument("--no-rc-invariant", dest="rc_invariant", action="store_false",
+                   help="don't average embeddings over both strands")
     m.add_argument("--proj-dim", type=int, default=256)
     m.add_argument("--pred-hidden", type=int, default=64)
     t = p.add_argument_group("training")
@@ -107,7 +109,7 @@ def main(argv=None):
 
     input_shape = (args.read_len - args.k + 1, 4 ** args.k)
     model = build_simsiam(input_shape, args.backbone, tuple(args.widths), args.blocks,
-                          args.proj_dim, args.pred_hidden, args.weight_decay)
+                          args.proj_dim, args.pred_hidden, args.weight_decay, args.rc_invariant)
     model.backbone.summary(print_fn=lambda s, **_: None)
 
     lr = args.lr or 0.05 * args.batch_size / 256

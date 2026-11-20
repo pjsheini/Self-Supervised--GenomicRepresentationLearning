@@ -110,3 +110,22 @@ def test_stop_gradient_in_loss():
         loss = negative_cosine(p, z)
     gp, gz = tape.gradient(loss, [p, z])
     assert gp is not None and gz is None
+
+
+def test_reverse_complement_layer_matches_encoding():
+    from ssgrl.model import ReverseComplementKmers
+    r = random_reads(4)
+    r[1, 20] = 4
+    x = kmer_onehot(r).astype(np.float32)
+    x_rc = kmer_onehot(np.stack([reverse_complement(row) for row in r])).astype(np.float32)
+    assert np.array_equal(ReverseComplementKmers(3)(x).numpy(), x_rc)
+
+
+@pytest.mark.parametrize("backbone", ["resnet1d", "resnet2d"])
+def test_backbone_is_strand_invariant(backbone):
+    from ssgrl.model import build_backbone
+    bb = build_backbone((148, 64), backbone, widths=(16, 32), blocks_per_stage=1)
+    r = random_reads(4)
+    x = kmer_onehot(r).astype(np.float32)
+    x_rc = kmer_onehot(np.stack([reverse_complement(row) for row in r])).astype(np.float32)
+    assert np.allclose(bb.predict(x, verbose=0), bb.predict(x_rc, verbose=0), atol=1e-5)

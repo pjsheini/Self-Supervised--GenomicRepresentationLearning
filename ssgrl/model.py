@@ -52,6 +52,32 @@ class AttentionPooling(layers.Layer):
         return {**super().get_config(), "units": self.units}
 
 
+def _rc_kmer_permutation(k: int) -> list[int]:
+    """perm[i] = column index of the reverse complement of k-mer i (ACGT order)."""
+    perm = []
+    for i in range(4 ** k):
+        digits = [(i // 4 ** (k - 1 - j)) % 4 for j in range(k)]
+        rc = [3 - d for d in reversed(digits)]
+        perm.append(sum(d * 4 ** (k - 1 - j) for j, d in enumerate(rc)))
+    return perm
+
+
+@keras.saving.register_keras_serializable(package="ssgrl")
+class ReverseComplementKmers(layers.Layer):
+    """Maps a k-mer matrix of a read to the k-mer matrix of its reverse complement."""
+
+    def __init__(self, k: int = 3, **kwargs):
+        super().__init__(**kwargs)
+        self.k = k
+        self.perm = _rc_kmer_permutation(k)
+
+    def call(self, x):
+        return keras.ops.take(keras.ops.flip(x, axis=1), self.perm, axis=-1)
+
+    def get_config(self):
+        return {**super().get_config(), "k": self.k}
+
+
 def _preact_block(x, filters, stride, conv, wd):
     reg = keras.regularizers.l2(wd) if wd else None
     shortcut = x
@@ -67,7 +93,8 @@ def _preact_block(x, filters, stride, conv, wd):
 
 
 def build_backbone(input_shape, kind: str = "resnet1d", widths=(64, 128, 256),
-                   blocks_per_stage: int = 2, weight_decay: float = 0.0) -> keras.Model:
+                   blocks_per_stage: int = 2, weight_decay: float = 0.0,
+                   rc_invariant: bool = True) -> keras.Model:
     """(T, 4**k) k-mer matrix -> pooled representation of size widths[-1]."""
     inp = keras.Input(shape=input_shape, name="kmer_matrix")
     if kind == "resnet2d":
@@ -89,7 +116,16 @@ def build_backbone(input_shape, kind: str = "resnet1d", widths=(64, 128, 256),
     if kind == "resnet2d":
         x = layers.Reshape((-1, x.shape[-1]))(x)  # flatten positions x k-mer cells
     out = AttentionPooling(name="attention_pool")(x)
-    return keras.Model(inp, out, name=f"backbone_{kind}")
+    core = keras.Model(inp, out, name=f"backbone_{kind}")
+    if not rc_invariant:
+        return core
+    # strand invariance by construction: average the embeddings of both strands
+    inp2 = keras.Input(shape=input_shape, name="kmer_matrix")
+    k = {16: 2, 64: 3, 256: 4, 1024: 5}[input_shape[-1]]
+    fwd = core(inp2)
+    rev = core(ReverseComplementKmers(k)(inp2))
+    out2 = layers.Average()([fwd, rev])
+    return keras.Model(inp2, out2, name=f"backbone_{kind}_rc")
 
 
 def build_projector(in_dim: int, proj_dim: int = 256) -> keras.Model:
@@ -174,8 +210,8 @@ class SimSiam(keras.Model):
 
 def build_simsiam(input_shape, backbone: str = "resnet1d", widths=(64, 128, 256),
                   blocks_per_stage: int = 2, proj_dim: int = 256, pred_hidden: int = 64,
-                  weight_decay: float = 5e-4) -> SimSiam:
-    bb = build_backbone(input_shape, backbone, widths, blocks_per_stage, weight_decay)
+                  weight_decay: float = 5e-4, rc_invariant: bool = True) -> SimSiam:
+    bb = build_backbone(input_shape, backbone, widths, blocks_per_stage, weight_decay, rc_invariant)
     proj = build_projector(bb.output_shape[-1], proj_dim)
     pred = build_predictor(proj_dim, pred_hidden)
     return SimSiam(bb, proj, pred, name="simsiam")

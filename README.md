@@ -56,6 +56,24 @@ copies whose nearest neighbour (cosine) among the database is the original.
 l2-normalised projections × √dim: ≈1 is healthy, ≈0 means every read maps to
 the same point.
 
+## Current results (Nov 2026, CPU, 6 epochs, 96k training reads)
+
+Retrieval on 2,000 held-out reads, recall@1 / @5 / @10:
+
+| Encoder | recall@1 | recall@5 | recall@10 |
+|---|---|---|---|
+| 3-mer count profile (baseline) | 0.218 | 0.302 | 0.337 |
+| `resnet1d`, no strand invariance | 0.127 | 0.240 | 0.317 |
+| `resnet1d`, strand-invariant (default) | 0.201 | **0.331** | **0.405** |
+
+Training is stable (loss → −0.97, `z_std` ≈ 0.84, so no complete collapse),
+and the learned encoder beats the baseline at recall@5/10. It does **not** yet
+beat it at recall@1. The main reason is *dimensional* collapse: the 256-d
+embeddings have an effective rank of only ~5, so many unrelated reads land
+close together. The most promising next step is a loss that explicitly
+decorrelates dimensions (VICReg or Barlow Twins), followed by longer training
+on a GPU.
+
 ## Data
 
 - `data/bat2100k.unmapped.fa` – 100,000 unmapped 150 bp reads from a bat sample
