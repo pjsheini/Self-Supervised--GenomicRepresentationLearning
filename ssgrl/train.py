@@ -1,4 +1,4 @@
-"""Train a SimSiam encoder on short reads.
+"""Train a self-supervised encoder (VICReg, Barlow Twins or SimSiam) on short reads.
 
     python -m ssgrl.train --reads data/bat2100k.unmapped.fa --epochs 10 --batch-size 256
 
@@ -28,7 +28,7 @@ from .data import AugmentConfig, make_ssl_dataset  # noqa: E402
 from .encoding import load_reads  # noqa: E402
 from .evaluate import (embed, load_query_reads, neighbour_report, plot_tsne,  # noqa: E402
                        retrieval_benchmark, write_tsv)
-from .model import build_simsiam  # noqa: E402
+from .model import LOSSES, build_ssl_model  # noqa: E402
 
 
 def parse_args(argv=None):
@@ -47,17 +47,25 @@ def parse_args(argv=None):
     a.add_argument("--min-keep", type=float, default=0.7)
     a.add_argument("--crop-prob", type=float, default=0.8)
     m = p.add_argument_group("model")
+    m.add_argument("--loss", choices=LOSSES, default="vicreg",
+                   help="vicreg (default) and barlow decorrelate embedding dimensions; simsiam is the original")
     m.add_argument("--backbone", choices=["resnet1d", "resnet2d"], default="resnet1d")
     m.add_argument("--widths", type=int, nargs="+", default=[64, 128, 256])
     m.add_argument("--blocks", type=int, default=2, help="residual blocks per stage")
     m.add_argument("--no-rc-invariant", dest="rc_invariant", action="store_false",
                    help="don't average embeddings over both strands")
-    m.add_argument("--proj-dim", type=int, default=256)
+    m.add_argument("--no-masked-pooling", dest="masked_pooling", action="store_false",
+                   help="let N padding take part in attention pooling (pre-Nov-2026 behaviour)")
+    m.add_argument("--proj-dim", type=int, default=None,
+                   help="projector size (simsiam, default 256) or expander size (vicreg/barlow, default 1024)")
     m.add_argument("--pred-hidden", type=int, default=64)
     t = p.add_argument_group("training")
     t.add_argument("--epochs", type=int, default=10)
     t.add_argument("--batch-size", type=int, default=256)
-    t.add_argument("--lr", type=float, default=None, help="default: 0.05 * batch_size / 256 (SimSiam rule)")
+    t.add_argument("--optimizer", choices=["sgd", "adamw"], default=None,
+                   help="default: sgd for simsiam, adamw for vicreg/barlow")
+    t.add_argument("--lr", type=float, default=None,
+                   help="default: sgd 0.05 * batch_size / 256, adamw 1e-3")
     t.add_argument("--weight-decay", type=float, default=5e-4)
     t.add_argument("--seed", type=int, default=0)
     t.add_argument("--out", default=None)
@@ -87,7 +95,8 @@ def save_loss_plot(history, path):
         if f"val_{key}" in history:
             ax.plot(history[f"val_{key}"], label="validation")
         ax.set_xlabel("epoch"); ax.set_title(key); ax.legend()
-    axes[0].axhline(-1, ls=":", c="grey")
+    if min(history["loss"]) < 0:  # simsiam: -1 is the optimum
+        axes[0].axhline(-1, ls=":", c="grey")
     axes[1].set_ylim(0, 1.1)
     fig.tight_layout(); fig.savefig(path, dpi=130); plt.close(fig)
 
@@ -108,14 +117,25 @@ def main(argv=None):
     val_ds = make_ssl_dataset(val, args.batch_size, args.k, aug, shuffle=False)
 
     input_shape = (args.read_len - args.k + 1, 4 ** args.k)
-    model = build_simsiam(input_shape, args.backbone, tuple(args.widths), args.blocks,
-                          args.proj_dim, args.pred_hidden, args.weight_decay, args.rc_invariant)
+    args.proj_dim = args.proj_dim or (256 if args.loss == "simsiam" else 1024)
+    args.optimizer = args.optimizer or ("sgd" if args.loss == "simsiam" else "adamw")
+    (out / "config.json").write_text(json.dumps(vars(args), indent=2))
+    model = build_ssl_model(input_shape, args.loss, args.backbone, tuple(args.widths), args.blocks,
+                            args.proj_dim, args.pred_hidden, args.weight_decay, args.rc_invariant,
+                            args.masked_pooling)
     model.backbone.summary(print_fn=lambda s, **_: None)
 
-    lr = args.lr or 0.05 * args.batch_size / 256
     steps = max(1, args.epochs * (len(train) // args.batch_size))
-    schedule = keras.optimizers.schedules.CosineDecay(lr, decay_steps=steps)
-    model.compile(optimizer=keras.optimizers.SGD(schedule, momentum=0.9))
+    if args.optimizer == "sgd":
+        lr = args.lr or 0.05 * args.batch_size / 256
+        opt = keras.optimizers.SGD(keras.optimizers.schedules.CosineDecay(lr, steps), momentum=0.9)
+    else:
+        lr = args.lr or 1e-3
+        warmup = min(steps // 10, 500)
+        schedule = keras.optimizers.schedules.CosineDecay(
+            0.0, max(1, steps - warmup), warmup_target=lr, warmup_steps=warmup)
+        opt = keras.optimizers.AdamW(schedule, weight_decay=0.0)  # L2 already on conv kernels
+    model.compile(optimizer=opt)
 
     metrics = {"before_training": retrieval_benchmark(model.backbone, eval_db, args.k, aug)}
     print("before training:", metrics["before_training"])

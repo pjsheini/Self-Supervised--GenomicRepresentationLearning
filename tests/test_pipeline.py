@@ -80,14 +80,15 @@ def test_read_sequences_fasta_and_fastq(tmp_path):
     assert list(read_sequences(fq)) == [("r1", "ACGT"), ("r2", "TT")]
 
 
-@pytest.mark.parametrize("backbone", ["resnet1d", "resnet2d"])
-def test_model_trains_and_saves(tmp_path, backbone):
+@pytest.mark.parametrize("backbone,loss", [("resnet1d", "simsiam"), ("resnet2d", "simsiam"),
+                                          ("resnet1d", "vicreg"), ("resnet1d", "barlow")])
+def test_model_trains_and_saves(tmp_path, backbone, loss):
     import keras
-    from ssgrl.model import build_simsiam
+    from ssgrl.model import build_ssl_model
 
     reads = random_reads(64)
-    model = build_simsiam((148, 64), backbone=backbone, widths=(16, 32), blocks_per_stage=1,
-                          proj_dim=32, pred_hidden=8)
+    model = build_ssl_model((148, 64), loss=loss, backbone=backbone, widths=(16, 32),
+                            blocks_per_stage=1, proj_dim=32, pred_hidden=8)
     model.compile(optimizer=keras.optimizers.SGD(0.01, momentum=0.9))
     before = [w.numpy().copy() for w in model.backbone.trainable_weights]
     hist = model.fit(make_ssl_dataset(reads, 16), epochs=1, verbose=0)
@@ -129,3 +130,45 @@ def test_backbone_is_strand_invariant(backbone):
     x = kmer_onehot(r).astype(np.float32)
     x_rc = kmer_onehot(np.stack([reverse_complement(row) for row in r])).astype(np.float32)
     assert np.allclose(bb.predict(x, verbose=0), bb.predict(x_rc, verbose=0), atol=1e-5)
+
+
+def test_vicreg_and_barlow_penalise_collapse():
+    import tensorflow as tf
+    from ssgrl.model import barlow_twins_loss, vicreg_loss
+    rng = np.random.default_rng(0)
+    spread = tf.constant(rng.normal(size=(256, 32)), tf.float32)
+    collapsed = tf.ones((256, 32)) + 1e-3 * tf.constant(rng.normal(size=(256, 32)), tf.float32)
+    # identical views: invariance term is zero, so only collapse is penalised
+    assert float(vicreg_loss(spread, spread)) < float(vicreg_loss(collapsed, collapsed))
+    assert float(vicreg_loss(collapsed, collapsed)) > 20  # variance hinge ~ 25 * 1
+    assert float(barlow_twins_loss(spread, spread)) < 0.2
+    assert float(barlow_twins_loss(spread, tf.constant(rng.normal(size=(256, 32)), tf.float32))) > 0.8
+
+
+def test_effective_rank():
+    from ssgrl.evaluate import effective_rank
+    rng = np.random.default_rng(0)
+    assert effective_rank(rng.normal(size=(2000, 16))) > 14
+    low = rng.normal(size=(2000, 1)) @ rng.normal(size=(1, 16))
+    assert effective_rank(low) < 1.5
+
+
+@pytest.mark.parametrize("backbone", ["resnet1d", "resnet2d"])
+def test_masked_pooling_ignores_padding(backbone):
+    """An all-N read must not leak into pooling, and masks must line up with features."""
+    from ssgrl.model import build_backbone
+    bb = build_backbone((148, 64), backbone, widths=(16, 32, 64), blocks_per_stage=1)
+    mask_layer = [l for l in bb.layers if l.name.startswith("backbone_")][0].get_layer("position_mask")
+    r = random_reads(2)
+    r[0, 100:] = 4
+    m = mask_layer(kmer_onehot(r).astype(np.float32)).numpy()
+    assert m[1].all() and not m[0].all() and m[0].any()
+    empty = kmer_onehot(np.full((1, 150), 4, np.uint8)).astype(np.float32)
+    assert np.allclose(bb.predict(empty, verbose=0), 0.0)
+
+
+def test_unique_reads_collapses_strands():
+    from ssgrl.evaluate import unique_reads
+    r = random_reads(3)
+    db = np.stack([r[0], r[1], reverse_complement(r[0]), r[2], r[1]])
+    assert len(unique_reads(db)) == 3

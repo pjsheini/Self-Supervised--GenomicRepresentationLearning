@@ -38,20 +38,61 @@ def knn(db: np.ndarray, queries: np.ndarray, k: int = 5) -> tuple[np.ndarray, np
     return idx, np.take_along_axis(sims, idx, axis=1)
 
 
+def effective_rank(emb: np.ndarray) -> float:
+    """Participation ratio (sum s)^2 / sum s^2 of the centred embeddings' singular values.
+
+    Roughly "how many dimensions are actually used"; low values mean dimensional collapse.
+    """
+    s = np.linalg.svd(emb - emb.mean(0), compute_uv=False)
+    return float(s.sum() ** 2 / ((s ** 2).sum() + 1e-12))
+
+
 def recall_at_k(db_emb, q_emb, ks=(1, 5, 10)) -> dict[str, float]:
     idx, _ = knn(db_emb, q_emb, max(ks))
     truth = np.arange(len(q_emb))[:, None]
     return {f"recall@{k}": float((idx[:, :k] == truth).any(axis=1).mean()) for k in ks}
 
 
+def unique_reads(reads: np.ndarray) -> np.ndarray:
+    """Drop exact duplicates, treating a read and its reverse complement as the same."""
+    seen, keep = set(), []
+    for i, r in enumerate(reads):
+        key = min(r.tobytes(), reverse_complement(r).tobytes())
+        if key not in seen:
+            seen.add(key)
+            keep.append(i)
+    return reads[keep]
+
+
 def retrieval_benchmark(backbone, db_reads: np.ndarray, k: int = 3,
                         aug: AugmentConfig | None = None, seed: int = 0) -> dict:
+    """Recall@k of noisy copies against their originals.
+
+    The database is de-duplicated first: the bat reads contain many exact copies
+    (35% of a 2k sample), and retrieving an identical copy is not an error.
+    """
     aug = aug or AugmentConfig()
+    n_raw = len(db_reads)
+    db_reads = unique_reads(db_reads)
     queries = augment_numpy(db_reads, aug, seed=seed)
-    out = {"n_database": int(len(db_reads)), "augment": asdict(aug)}
+    out = {"n_database": int(len(db_reads)), "n_before_dedup": int(n_raw), "augment": asdict(aug)}
     out["kmer_profile_baseline"] = recall_at_k(kmer_profile(db_reads, k), kmer_profile(queries, k))
     if backbone is not None:
-        out["learned"] = recall_at_k(embed(backbone, db_reads, k), embed(backbone, queries, k))
+        db_emb = embed(backbone, db_reads, k)
+        out["learned"] = recall_at_k(db_emb, embed(backbone, queries, k))
+        out["learned"]["effective_rank"] = effective_rank(db_emb)
+        out["learned"]["dim"] = int(db_emb.shape[1])
+    # recall@1 for each kind of change on its own, to see where retrieval fails
+    single = {"substitutions": AugmentConfig(aug.sub_rate, 0.0, aug.min_keep, 0.0),
+              "reverse_complement": AugmentConfig(0.0, 1.0, aug.min_keep, 0.0),
+              "crop": AugmentConfig(0.0, 0.0, aug.min_keep, 1.0)}
+    out["recall@1_by_augmentation"] = {}
+    for name, cfg in single.items():
+        q = augment_numpy(db_reads, cfg, seed=seed)
+        row = {"kmer_profile_baseline": recall_at_k(kmer_profile(db_reads, k), kmer_profile(q, k), (1,))["recall@1"]}
+        if backbone is not None:
+            row["learned"] = recall_at_k(db_emb, embed(backbone, q, k), (1,))["recall@1"]
+        out["recall@1_by_augmentation"][name] = row
     return out
 
 
