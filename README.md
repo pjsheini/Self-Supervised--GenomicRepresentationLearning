@@ -29,13 +29,59 @@ python -m ssgrl.train --epochs 6 --batch-size 256 --queries data/sim_RaTG13.fq
 python -m ssgrl.evaluate runs/<run>/backbone.keras --queries data/sim_RaTG13.fq
 ```
 
-`python -m ssgrl.train -h` lists every option (loss, k, augmentation strengths,
-backbone, widths, optimizer, learning rate, `--mlflow`, ...). On 2 CPU cores an
-epoch over 96k reads takes about 11 minutes; a GPU is much faster.
+On 2 CPU cores a VICReg epoch over 96k reads takes about 15 minutes (SimSiam
+about 10); a GPU is much faster. For a quick check, add `--max-train 20000
+--epochs 2`.
 
-A run directory contains `backbone.keras` (the encoder to use for embeddings),
-`simsiam.weights.h5`, `config.json`, `history.json/csv`, `loss.png`,
-`metrics.json`, `tsne.png` and, with `--queries`, `neighbours.tsv`.
+A run directory (`runs/<timestamp>/` unless you pass `--out`) contains:
+
+| File | What it is |
+|---|---|
+| `backbone.keras` | the trained encoder (read → 256-d embedding); this is the file to use |
+| `model.weights.h5` | full model weights from the best validation epoch, including the projection head |
+| `config.json` | every setting used for the run |
+| `history.json`, `history.csv`, `loss.png` | per-epoch training and validation loss and `z_std` |
+| `metrics.json` | retrieval benchmark before and after training |
+| `tsne.png` | 2-D t-SNE map of 1,000 held-out read embeddings |
+| `neighbours.tsv` | with `--queries`: the 5 nearest database reads of each query, with cosine similarity and edit distance |
+
+### Common options
+
+`python -m ssgrl.train -h` lists all of them.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--loss` | `vicreg` | `vicreg`, `barlow` or `simsiam` |
+| `--reads` | `data/bat2100k.unmapped.fa` | training reads, FASTA or FASTQ, optionally `.gz` |
+| `--read-len` | 150 | reads are truncated or N-padded to this length |
+| `--k` | 3 | k-mer size; the matrix has 4^k columns |
+| `--max-train` | all | cap on training reads |
+| `--epochs`, `--batch-size` | 10, 256 | |
+| `--backbone` | `resnet1d` | or `resnet2d`, the original image-style design (slower) |
+| `--sub-rate`, `--rc-prob`, `--min-keep`, `--crop-prob` | 0.02, 0.5, 0.7, 0.8 | augmentation strengths |
+| `--no-rc-invariant`, `--no-masked-pooling` | off | turn off strand averaging / padding masks |
+| `--mlflow` | off | log the run to MLflow (if installed) |
+
+### Using a trained encoder in your own code
+
+```python
+import keras
+import ssgrl.model  # registers the custom layers needed to load the encoder
+from ssgrl.encoding import load_reads
+from ssgrl.evaluate import embed, knn
+
+encoder = keras.saving.load_model("runs/<run>/backbone.keras")
+reads = load_reads("my_reads.fq")            # (n, 150) array of base codes
+emb = embed(encoder, reads)                  # (n, 256) embeddings
+idx, sims = knn(emb, emb[:10], k=5)          # 5 nearest reads for the first 10
+```
+
+### Your own data
+
+Any FASTA/FASTQ file of short reads works with `--reads`. The last
+`--eval-size` + `--val-size` reads (default 2,000 each) are held out, so
+shuffle the file first if it is sorted. Reads longer than `--read-len` are
+truncated; shorter ones are padded with N, which the model ignores.
 
 ## How it works
 
@@ -87,19 +133,33 @@ Loss comparison at small scale (20k reads, 5 epochs; recall@1 / @5 / @10):
 SimSiam 0.307 / 0.382 / 0.442, Barlow Twins 0.408 / 0.615 / 0.704,
 VICReg 0.503 / 0.690 / 0.752, VICReg + masked pooling 0.515 / 0.696 / 0.766.
 
-**Still open.** On substitutions or crops alone, the learned encoder is
-still a little behind the plain 3-mer profile; it wins overall because it
-also handles strand and combined changes. Likely next gains: longer training
-on a GPU, a larger expander (VICReg papers use 8192), and tuning the
-crop/substitution strengths. Among the 500 simulated RaTG13 reads, 3 have a
-bat read within 30 edits as nearest neighbour (best: 9 edits); the rest have
-no close match (median 78 edits).
+Among the 500 simulated RaTG13 reads, 3 have a bat read within 30 edits as
+their nearest neighbour (best: 9 edits); the rest have no close match (median
+78 edits).
+
+## Next steps
+
+- **Train longer on a GPU.** Training loss was still falling after 6 epochs
+  (validation loss had levelled off), and more data per epoch should help.
+- **Close the gap on single changes.** With only substitutions or only a crop
+  applied, the encoder is still a little behind the plain 3-mer profile. It
+  wins overall because it handles strand flips and combined changes. Try a
+  larger VICReg expander (the paper uses 8192; here 1024) and tune the
+  augmentation strengths.
+- **Follow up the RaTG13 hits.** BLAST the 3 bat reads that sit close to
+  RaTG13 reads.
+- **Look at the duplicates.** 35% of the held-out bat reads are exact copies,
+  possibly rRNA or repeats; filtering them before training may help.
 
 ## Data
 
 - `data/bat2100k.unmapped.fa` – 100,000 unmapped 150 bp reads from a bat sample
 - `data/RaTG13.fasta` – bat coronavirus RaTG13 genome (MN996532.1, 29,855 bp)
 - `data/RmYN01genome_NMDC60013004-01.fasta` – RmYN02 bat coronavirus genome
+- `data/sim_RaTG13.fq` – 500 reads simulated from RaTG13 (0.5% errors), used as `--queries`
+
+Loading a read file writes a `.npy` cache next to it (git-ignored), so later
+runs start instantly.
 
 ## Changes from the 2022 version
 

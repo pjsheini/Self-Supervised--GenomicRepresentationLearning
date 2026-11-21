@@ -6,7 +6,7 @@ Data split (by position in the file, so it is reproducible and never overlaps):
     [ train ... | validation (--val-size) | eval database (--eval-size) ]
 The eval database is the same slice `python -m ssgrl.evaluate` uses by default.
 
-Outputs in --out (default runs/<timestamp>/): backbone.keras, simsiam.weights.h5,
+Outputs in --out (default runs/<timestamp>/): backbone.keras, model.weights.h5,
 config.json, history.json, loss.png, metrics.json, tsne.png, and neighbours.tsv
 if --queries is given.
 """
@@ -141,7 +141,7 @@ def main(argv=None):
     print("before training:", metrics["before_training"])
 
     callbacks = [
-        keras.callbacks.ModelCheckpoint(str(out / "simsiam.weights.h5"), monitor="val_loss",
+        keras.callbacks.ModelCheckpoint(str(out / "model.weights.h5"), monitor="val_loss",
                                         save_best_only=True, save_weights_only=True),
         keras.callbacks.CSVLogger(str(out / "history.csv")),
         keras.callbacks.TerminateOnNaN(),
@@ -162,7 +162,7 @@ def main(argv=None):
     (out / "history.json").write_text(json.dumps(history, indent=2))
     save_loss_plot(history, out / "loss.png")
 
-    model.load_weights(out / "simsiam.weights.h5")  # best validation epoch
+    model.load_weights(out / "model.weights.h5")  # best validation epoch
     model.backbone.save(out / "backbone.keras")
 
     metrics["after_training"] = retrieval_benchmark(model.backbone, eval_db, args.k, aug)
