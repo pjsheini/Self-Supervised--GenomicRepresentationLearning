@@ -140,7 +140,7 @@ their nearest neighbour (best: 9 edits); the rest have no close match (median
 ## Next steps
 
 - **Train longer on a GPU.** Training loss was still falling after 6 epochs
-  (validation loss had levelled off), and more data per epoch should help.
+  (validation loss had levelled off).
 - **Close the gap on single changes.** With only substitutions or only a crop
   applied, the encoder is still a little behind the plain 3-mer profile. It
   wins overall because it handles strand flips and combined changes. Try a
