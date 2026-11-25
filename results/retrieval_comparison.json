@@ -1,0 +1,98 @@
+{
+  "n_database": 1305,
+  "n_before_dedup": 2000,
+  "reads": "data/bat2100k.unmapped.fa",
+  "k": 3,
+  "seed": 0,
+  "results": {
+    "3-mer profile (l1)": {
+      "recall@1": 0.34406130268199236,
+      "recall@5": 0.4482758620689655,
+      "recall@10": 0.47739463601532567,
+      "seconds": 0.1,
+      "by_augmentation": {
+        "substitutions": 0.8704980842911877,
+        "reverse_complement": 0.03295019157088123,
+        "crop": 0.6337164750957854
+      }
+    },
+    "4-mer profile (l1) / TNF": {
+      "recall@1": 0.3731800766283525,
+      "recall@5": 0.46513409961685825,
+      "recall@10": 0.5065134099616858,
+      "seconds": 0.0,
+      "by_augmentation": {
+        "substitutions": 0.918007662835249,
+        "reverse_complement": 0.031417624521072794,
+        "crop": 0.6819923371647509
+      }
+    },
+    "4-mer counts (cosine)": {
+      "recall@1": 0.3731800766283525,
+      "recall@5": 0.46436781609195404,
+      "recall@10": 0.5065134099616858,
+      "seconds": 0.0,
+      "by_augmentation": {
+        "substitutions": 0.918007662835249,
+        "reverse_complement": 0.031417624521072794,
+        "crop": 0.6835249042145594
+      }
+    },
+    "canonical 4-mer profile": {
+      "recall@1": 0.6628352490421456,
+      "recall@5": 0.8084291187739464,
+      "recall@10": 0.8444444444444444,
+      "seconds": 0.1,
+      "by_augmentation": {
+        "substitutions": 0.8781609195402299,
+        "reverse_complement": 0.9954022988505747,
+        "crop": 0.6590038314176245
+      }
+    },
+    "canonical 6-mer profile": {
+      "recall@1": 0.7295019157088123,
+      "recall@5": 0.8521072796934865,
+      "recall@10": 0.8804597701149425,
+      "seconds": 0.4,
+      "by_augmentation": {
+        "substitutions": 0.9348659003831418,
+        "reverse_complement": 0.9969348659003832,
+        "crop": 0.7057471264367816
+      }
+    },
+    "Mash (k=21, s=1000)": {
+      "recall@1": 0.6950191570881226,
+      "recall@5": 0.8360153256704981,
+      "recall@10": 0.8735632183908046,
+      "seconds": 5.2,
+      "by_augmentation": {
+        "substitutions": 0.8352490421455939,
+        "reverse_complement": 1.0,
+        "crop": 0.7226053639846743
+      }
+    },
+    "minimap2 (preset sr)": {
+      "recall@1": 0.7264367816091954,
+      "recall@5": 0.8045977011494253,
+      "recall@10": 0.8130268199233717,
+      "seconds": 0.2,
+      "by_augmentation": {
+        "substitutions": 0.8681992337164751,
+        "reverse_complement": 0.9708812260536398,
+        "crop": 0.7172413793103448
+      }
+    },
+    "SSGRL (this repo)": {
+      "recall@1": 0.5685823754789272,
+      "recall@5": 0.753256704980843,
+      "recall@10": 0.7992337164750958,
+      "seconds": 3.3,
+      "by_augmentation": {
+        "substitutions": 0.7524904214559387,
+        "reverse_complement": 1.0,
+        "crop": 0.5969348659003831
+      },
+      "effective_rank": 37.3
+    }
+  }
+}
