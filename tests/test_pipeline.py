@@ -172,3 +172,102 @@ def test_unique_reads_collapses_strands():
     r = random_reads(3)
     db = np.stack([r[0], r[1], reverse_complement(r[0]), r[2], r[1]])
     assert len(unique_reads(db)) == 3
+
+
+# --- baselines -------------------------------------------------------------
+
+def test_kmer_profile_and_tnf():
+    from ssgrl.baselines import kmer_profile, tnf
+    r = random_reads(4)
+    p = kmer_profile(r, 4, "l1")
+    assert p.shape == (4, 256)
+    assert np.allclose(p.sum(1), 1.0)
+    assert np.allclose(p, tnf(r))
+    counts = kmer_profile(r, 4, "none")
+    assert counts.sum(1).min() == 150 - 3
+
+
+def test_canonical_profile_is_strand_invariant():
+    from ssgrl.baselines import canonical_kmer_profile
+    r = random_reads(5)
+    rc = np.stack([reverse_complement(row) for row in r])
+    a = canonical_kmer_profile(r, 4)
+    assert a.shape == (5, 136)  # 256 4-mers fold to 136 canonical pairs
+    assert np.allclose(a, canonical_kmer_profile(rc, 4))
+    # a plain profile is NOT strand invariant; that is the point of this control
+    from ssgrl.baselines import kmer_profile
+    assert not np.allclose(kmer_profile(r, 4), kmer_profile(rc, 4))
+
+
+def test_minhash_strand_invariant_and_self_distance():
+    from ssgrl.baselines import MinHashSketch, canonical_kmer_hashes
+    r = random_reads(3)
+    for row in r:
+        assert np.array_equal(canonical_kmer_hashes(row), canonical_kmer_hashes(reverse_complement(row)))
+    mh = MinHashSketch()
+    a = canonical_kmer_hashes(r[0])
+    assert mh.distance(a, a) == 0.0
+    assert mh.jaccard(a, canonical_kmer_hashes(r[1])) < 0.5
+
+
+def test_minhash_and_minimap2_retrieve_exact_copies():
+    from ssgrl.baselines import MinHashSketch, minimap2_rank, recall_from_ranks
+    db = random_reads(20)
+    assert recall_from_ranks(MinHashSketch().rank(db, db, 1), (1,))["recall@1"] == 1.0
+    assert recall_from_ranks(minimap2_rank(db, db, 1), (1,))["recall@1"] == 1.0
+
+
+def test_recall_from_ranks_handles_unmapped():
+    from ssgrl.baselines import recall_from_ranks
+    ranks = np.array([[0, 1], [-1, -1], [5, 2]])
+    assert recall_from_ranks(ranks, (1,))["recall@1"] == 1 / 3
+
+
+# --- binning ---------------------------------------------------------------
+
+def test_kmedoid_recovers_well_separated_clusters():
+    from ssgrl.binning import bin_quality, kmedoid, normalize
+    rng = np.random.default_rng(0)
+    centers = np.eye(3) * 10
+    emb = np.repeat(centers, 40, axis=0) + rng.normal(0, 0.1, (120, 3))
+    labels = kmedoid(normalize(emb), min_similarity=0.9, min_bin_size=5)
+    assert len(np.unique(labels[labels != -1])) == 3
+    q = bin_quality(np.repeat(np.arange(3), 40), labels)
+    assert q["f1_bins"]["0.9"] == 3 and q["ari"] > 0.99
+
+
+def test_threshold_percentile_is_between_min_and_max():
+    from ssgrl.binning import class_center_similarity_threshold, normalize
+    rng = np.random.default_rng(0)
+    emb = normalize(rng.normal(size=(200, 8)))
+    labels = rng.integers(0, 4, 200)
+    t = class_center_similarity_threshold(emb, labels)
+    assert -1.0 <= t <= 1.0
+
+
+def test_tiling_and_pooling_round_trip():
+    from ssgrl.baselines import canonical_kmer_profile
+    from ssgrl.binning import pooled_embedding, tile_sequences
+    seqs = ["".join("ACGT"[i % 4] for i in range(450)), "".join("ACGT"[i % 3] for i in range(300))]
+    tiles, owner = tile_sequences(seqs, 150)
+    assert tiles.shape == (5, 150) and list(owner) == [0, 0, 0, 1, 1]
+    pooled = pooled_embedding(lambda r: canonical_kmer_profile(r, 4), tiles, owner, 2)
+    assert pooled.shape == (2, 136)
+    # pooling the tiles of one sequence equals the mean of its tile profiles
+    expected = canonical_kmer_profile(tiles[:3], 4).mean(axis=0)
+    assert np.allclose(pooled[0], expected, atol=1e-6)
+
+
+def test_simulated_metagenome_round_trip(tmp_path):
+    from ssgrl.binning import read_tsv
+    from ssgrl.simulate_metagenome import main as sim_main
+    g1, g2 = tmp_path / "a.fa", tmp_path / "b.fa"
+    rng = np.random.default_rng(0)
+    for path in (g1, g2):
+        path.write_text(">x\n" + decode(rng.integers(0, 4, 20000).astype(np.uint8)) + "\n")
+    out = tmp_path / "meta"
+    sim_main([str(g1), str(g2), "-o", str(out), "-n", "100", "-l", "150"])
+    seqs, labels = read_tsv(out / "binning_5.tsv")
+    assert len(seqs) == len(labels) >= 40
+    assert set(labels) == {"a", "b"}
+    assert all(len(s) == 150 for s in seqs)

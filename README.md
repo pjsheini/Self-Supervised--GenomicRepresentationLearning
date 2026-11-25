@@ -27,6 +27,13 @@ python -m ssgrl.train --epochs 6 --batch-size 256 --queries data/sim_RaTG13.fq
 
 # evaluate a saved encoder later
 python -m ssgrl.evaluate runs/<run>/backbone.keras --queries data/sim_RaTG13.fq
+
+# compare against minimap2, Mash and canonical k-mer profiles
+python -m ssgrl.compare --backbone runs/<run>/backbone.keras
+
+# read-binning benchmark (DNABERT-S protocol) on a synthetic metagenome
+python -m ssgrl.simulate_metagenome data/genomes/*.fa -o data/metagenome_sim -n 1200 -l 5000
+python -m ssgrl.binning --data data/metagenome_sim --sample 5 --backbone runs/<run>/backbone.keras
 ```
 
 On 2 CPU cores a VICReg epoch over 96k reads takes about 15 minutes (SimSiam
@@ -93,6 +100,10 @@ truncated; shorter ones are padded with N, which the model ignores.
 | Training | `ssgrl/train.py` | AdamW with warmup + cosine decay (SGD for SimSiam), best-val checkpoint |
 | Evaluation | `ssgrl/evaluate.py` | Retrieval recall@k vs a bag-of-k-mers baseline, neighbour report with edit distance, t-SNE |
 | Read simulator | `ssgrl/simulate.py` | Samples reads from a reference with substitution errors |
+| Baselines | `ssgrl/baselines.py` | k-mer profiles, canonical (strand-folded) profiles, Mash MinHash, minimap2 via `mappy`, DNABERT-S |
+| Retrieval comparison | `ssgrl/compare.py` | Scores every method on the same queries |
+| Binning benchmark | `ssgrl/binning.py` | DNABERT-S protocol: threshold, KMedoid, Hungarian matching, F1 bins |
+| Metagenome simulator | `ssgrl/simulate_metagenome.py` | CAMI-style synthetic metagenome in DNABERT-S's TSV layout |
 
 **Data split** (by position in the file, reproducible):
 `[ train | validation (--val-size) | eval database (--eval-size) ]`.
@@ -112,44 +123,98 @@ the same point.
 
 ## Current results
 
-CPU, 96k training reads, 6 epochs, strand-invariant `resnet1d`. Retrieval
-against 1,305 unique held-out reads (see *Retrieval benchmark* above):
+**The headline: SSGRL does not beat standard baselines.** Against a plain
+3-mer profile it looks good, but that baseline cannot handle both DNA strands.
+Counting k-mers *canonically* (folding each k-mer together with its reverse
+complement, as Mash and Kraken do) removes that handicap in one line of code
+and beats the learned encoder outright, as do Mash and minimap2.
 
-| Encoder | recall@1 | recall@5 | recall@10 | effective rank (of 256) |
+### Read retrieval
+
+1,305 unique held-out reads; each gets a noisy copy (2% substitutions, strand
+flip, crop to ≥70%) and we ask whether its nearest neighbour is the original.
+Reproduce with `python -m ssgrl.compare --backbone runs/<run>/backbone.keras`.
+
+| Method | recall@1 | recall@5 | recall@10 | subs only | RC only | crop only | time |
+|---|---|---|---|---|---|---|---|
+| canonical 6-mer profile | **0.730** | **0.852** | **0.880** | **0.935** | 0.997 | 0.706 | 0.4s |
+| minimap2 (preset `sr`) | 0.726 | 0.805 | 0.813 | 0.868 | 0.971 | **0.717** | 0.2s |
+| Mash (k=21, s=1000) | 0.695 | 0.836 | 0.874 | 0.835 | **1.000** | 0.723 | 5.2s |
+| canonical 4-mer profile | 0.663 | 0.808 | 0.844 | 0.878 | 0.995 | 0.659 | 0.1s |
+| SSGRL VICReg | 0.569 | 0.753 | 0.799 | 0.752 | **1.000** | 0.597 | 3.3s |
+| 4-mer profile / TNF | 0.373 | 0.465 | 0.507 | 0.918 | 0.031 | 0.682 | 0.0s |
+| 3-mer profile | 0.344 | 0.448 | 0.477 | 0.870 | 0.033 | 0.634 | 0.1s |
+| SSGRL SimSiam | 0.314 | 0.463 | 0.551 | 0.714 | 1.000 | 0.295 | – |
+
+The `RC only` column explains the earlier result: plain profiles score 0.03 on
+reverse-complemented queries, so SSGRL's whole advantage over them came from
+strand handling, not from anything learned. Canonical counting supplies that
+for free and is better on substitutions too.
+
+### Read binning (DNABERT-S protocol)
+
+Threshold from a labelled split, greedy KMedoid clustering, Hungarian matching,
+then bins counted by F1 — the procedure in DNABERT-S's `eval_binning.py`, so the
+numbers are comparable with that paper. CAMI2 is not reachable from this
+workspace, so these runs use a synthetic metagenome built from 6 reference
+genomes (`ssgrl.simulate_metagenome`); the same command runs on CAMI2 TSVs
+unchanged. Averaged over the two samples:
+
+| Method | bins F1>0.7 | bins F1>0.5 | ARI | time |
 |---|---|---|---|---|
-| 3-mer count profile (baseline) | 0.344 | 0.448 | 0.477 | – |
-| SimSiam | 0.314 | 0.463 | 0.551 | 4.7 |
-| **VICReg (default)** | **0.569** | **0.753** | **0.799** | **37.3** |
+| canonical 4-mer profile | **3.5** | **6.0** | **0.509** | 0.8s |
+| canonical 6-mer profile | 3.0 | 5.5 | 0.463 | 1.4s |
+| 4-mer profile / TNF | 1.5 | 3.5 | 0.313 | 1.0s |
+| 3-mer profile | 1.5 | 3.0 | 0.276 | 0.9s |
+| SSGRL VICReg | 1.5 | 3.0 | 0.314 | 81s |
 
-Recall@1 when only one kind of change is applied:
+A tiled canonical 6-mer control (same 150 bp windows and mean pooling SSGRL
+needs for long sequences) scores ARI 0.45, so tiling is not what holds SSGRL
+back — the embedding itself is.
 
-| Change | baseline | VICReg |
+**At 150 bp, composition binning does not work at all:** every method lands at
+ARI 0.06–0.11 with no bin above F1 0.5. DNABERT-S filters to sequences ≥2500 bp
+for exactly this reason. Read-level binning is only meaningful at contig scale,
+which an encoder with a fixed 150 bp input can reach only by tiling.
+
+### Training behaviour
+
+| Loss | recall@1 | effective rank (of 256) |
 |---|---|---|
-| substitutions (2%) | 0.870 | 0.752 |
-| reverse complement | 0.033 | 1.000 |
-| crop to ≥70% + shift | 0.634 | 0.597 |
+| SimSiam | 0.314 | 4.7 |
+| Barlow Twins | ~0.41 (20k reads) | 12.5 |
+| VICReg | 0.569 | 37.3 |
 
-Loss comparison at small scale (20k reads, 5 epochs; recall@1 / @5 / @10):
-SimSiam 0.307 / 0.382 / 0.442, Barlow Twins 0.408 / 0.615 / 0.704,
-VICReg 0.503 / 0.690 / 0.752, VICReg + masked pooling 0.515 / 0.696 / 0.766.
+SimSiam collapsed onto ~5 of 256 dimensions. VICReg's variance and covariance
+terms fixed that, which is why it is the default. Small-scale comparison (20k
+reads, 5 epochs, recall@1): SimSiam 0.307, Barlow Twins 0.408, VICReg 0.503,
+VICReg + masked pooling 0.515.
 
-Among the 500 simulated RaTG13 reads, 3 have a bat read within 30 edits as
-their nearest neighbour (best: 9 edits); the rest have no close match (median
-78 edits).
+Among 500 simulated RaTG13 reads, 3 have a bat read within 30 edits as their
+nearest neighbour (best: 9 edits); the rest have no close match (median 78).
 
 ## Next steps
 
-- **Train longer on a GPU.** Training loss was still falling after 6 epochs
-  (validation loss had levelled off).
-- **Close the gap on single changes.** With only substitutions or only a crop
-  applied, the encoder is still a little behind the plain 3-mer profile. It
-  wins overall because it handles strand flips and combined changes. Try a
-  larger VICReg expander (the paper uses 8192; here 1024) and tune the
-  augmentation strengths.
-- **Follow up the RaTG13 hits.** BLAST the 3 bat reads that sit close to
-  RaTG13 reads.
-- **Look at the duplicates.** 35% of the held-out bat reads are exact copies,
-  possibly rRNA or repeats; filtering them before training may help.
+The benchmarks above say where the real problem is. Ranked by what would change
+the conclusion:
+
+1. **Beat canonical k-mer counting, or stop.** That is the honest bar: 0.730
+   recall@1 and ARI 0.509, with no training and in under a second. If a learned
+   encoder cannot pass it, the learning is not earning its cost.
+2. **Fix crop robustness.** SSGRL scores 0.597 on cropped queries against 0.717
+   for minimap2. Attention pooling over 150 bp may be discarding positional
+   detail; try several pooled scales, or local alignment-style matching.
+3. **Give the encoder canonical k-mer counts as input,** rather than making it
+   learn strand invariance from scratch. It is already strand-invariant by
+   construction, so the input could be too.
+4. **Train longer on a GPU** with a larger VICReg expander (the paper uses 8192;
+   here 1024). An epoch is ~15 min on 2 CPU cores.
+5. **Run real CAMI2** once network access allows (`--data` already accepts the
+   DNABERT-S TSV layout), and add DNABERT-S itself with `--dnabert-s`
+   (implemented, untested here: Hugging Face is blocked in this workspace).
+6. **Support contig-length input natively,** since that is the scale at which
+   binning works.
+7. **Follow up the RaTG13 hits** by BLASTing those 3 bat reads.
 
 ## Data
 
@@ -157,6 +222,7 @@ their nearest neighbour (best: 9 edits); the rest have no close match (median
 - `data/RaTG13.fasta` – bat coronavirus RaTG13 genome (MN996532.1, 29,855 bp)
 - `data/RmYN01genome_NMDC60013004-01.fasta` – RmYN02 bat coronavirus genome
 - `data/sim_RaTG13.fq` – 500 reads simulated from RaTG13 (0.5% errors), used as `--queries`
+- `data/genomes/` – 6 reference genomes (from [nf-core/test-datasets](https://github.com/nf-core/test-datasets)) for the synthetic metagenome
 
 Loading a read file writes a `.npy` cache next to it (git-ignored), so later
 runs start instantly.
